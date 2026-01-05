@@ -248,6 +248,13 @@ game.addSystem(() => {
         const moveTarget = { x: t.x + dirX * 1000, y: t.y + dirY * 1000 };
         head.moveTowards(moveTarget, SPEED);
 
+        // Die if touching world boundary
+        const radius = head.get(Sprite).radius;
+        if (t.x - radius < 0 || t.x + radius > WORLD_WIDTH ||
+            t.y - radius < 0 || t.y + radius > WORLD_HEIGHT) {
+            killSnake(head.get(Player).clientId);
+        }
+
         const frameDiff = game.frame - sh.lastSpawnFrame;
         if (frameDiff >= SEGMENT_SPAWN_INTERVAL) {
             const color = head.get(Sprite).color;

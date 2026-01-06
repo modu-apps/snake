@@ -1,43 +1,22 @@
 <!DOCTYPE html>
 <html>
-
 <head>
     <meta charset="UTF-8">
     <title>Snake</title>
     <style>
-        * {
-            margin: 0;
-            padding: 0;
-            box-sizing: border-box;
-        }
-
-        body {
-            background: #111;
-            display: flex;
-            justify-content: center;
-            align-items: center;
-            height: 100vh;
-            overflow: hidden;
-        }
-
-        #game-container {
-            position: relative;
-        }
-
-        canvas {
-            border: 2px solid #333;
-        }
-
+        * { margin: 0; padding: 0; box-sizing: border-box; }
+        body { background: #111; display: flex; justify-content: center; align-items: center; height: 100vh; overflow: hidden; }
+        #game-container { position: relative; }
+        canvas { border: 2px solid #333; }
         #minimap {
             position: fixed;
             bottom: 10px;
             right: 10px;
             border: 2px solid #555;
-            background: rgba(0, 0, 0, 0.7);
+            background: rgba(0,0,0,0.7);
             border-radius: 4px;
             z-index: 100;
         }
-
         #stats {
             position: absolute;
             bottom: 10px;
@@ -47,18 +26,15 @@
             font-size: 16px;
             text-shadow: 1px 1px 2px #000;
         }
-
         #stats .length {
             font-size: 20px;
             font-weight: bold;
         }
-
         #stats .rank {
             color: #aaa;
         }
     </style>
 </head>
-
 <body>
     <div id="game-container">
         <canvas id="game" width="1400" height="900"></canvas>
@@ -74,5 +50,4 @@
     <!-- Built game bundle (includes engine) -->
     <script src="game.js"></script>
 </body>
-
 </html>

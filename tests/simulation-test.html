@@ -1,0 +1,639 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <meta charset="UTF-8">
+    <title>Snake Simulation Determinism Tests</title>
+    <style>
+        body { font-family: monospace; padding: 20px; background: #111; color: #0f0; }
+        .pass { color: #0f0; }
+        .fail { color: #f00; }
+        .info { color: #0ff; }
+        .warn { color: #ff0; }
+        pre { background: #222; padding: 10px; overflow-x: auto; max-height: 300px; }
+        .section { margin: 20px 0; padding: 10px; border: 1px solid #333; }
+        button { margin: 5px; padding: 10px 20px; cursor: pointer; }
+        #hash-output { font-size: 18px; padding: 10px; background: #222; margin: 10px 0; }
+    </style>
+</head>
+<body>
+    <h1>Snake Simulation Determinism Tests</h1>
+    <p class="info">Run this page in multiple browsers/tabs and compare the final hash values.</p>
+    <p class="info">If hashes differ, the simulation is NOT deterministic.</p>
+
+    <div class="section">
+        <h2>Final Hash (compare across browsers)</h2>
+        <div id="hash-output">Running tests...</div>
+    </div>
+
+    <div class="section">
+        <h2>Test Results</h2>
+        <div id="output"></div>
+    </div>
+
+    <div class="section">
+        <h2>Detailed State Log</h2>
+        <pre id="state-log"></pre>
+    </div>
+
+<script>
+const output = document.getElementById('output');
+const stateLog = document.getElementById('state-log');
+const hashOutput = document.getElementById('hash-output');
+
+function log(msg, type = '') {
+    const div = document.createElement('div');
+    div.className = type;
+    div.textContent = msg;
+    output.appendChild(div);
+}
+
+function logState(msg) {
+    stateLog.textContent += msg + '\n';
+}
+
+// ============================================================================
+// EXACT COPY OF GAME CONSTANTS
+// ============================================================================
+const SPEED = 8;
+const BOOST_SPEED = 18;
+const BOOST_COST_FRAMES = 10;
+const MIN_BOOST_LENGTH = 10;
+const INITIAL_LENGTH = 15;
+const SEGMENT_SPAWN_INTERVAL = 1;
+const TURN_SPEED = 0.15;
+const WORLD_WIDTH = 4000;
+const WORLD_HEIGHT = 4000;
+
+// ============================================================================
+// SIMULATION STATE
+// ============================================================================
+class SnakeState {
+    constructor(id, x, y) {
+        this.id = id;
+        this.x = x;
+        this.y = y;
+        this.dirX = 1;
+        this.dirY = 0;
+        this.length = INITIAL_LENGTH;
+        this.lastSpawnFrame = 0;
+        this.boostFrames = 0;
+        this.boosting = 0;
+        this.alive = true;
+    }
+
+    clone() {
+        const c = new SnakeState(this.id, this.x, this.y);
+        c.dirX = this.dirX;
+        c.dirY = this.dirY;
+        c.length = this.length;
+        c.lastSpawnFrame = this.lastSpawnFrame;
+        c.boostFrames = this.boostFrames;
+        c.boosting = this.boosting;
+        c.alive = this.alive;
+        return c;
+    }
+
+    hash() {
+        // Create a deterministic hash of the state
+        return `${this.id}:${this.x.toFixed(6)}:${this.y.toFixed(6)}:${this.dirX.toFixed(6)}:${this.dirY.toFixed(6)}:${this.length}:${this.lastSpawnFrame}:${this.boostFrames}:${this.alive}`;
+    }
+}
+
+class Segment {
+    constructor(ownerId, x, y, spawnFrame) {
+        this.ownerId = ownerId;
+        this.x = x;
+        this.y = y;
+        this.spawnFrame = spawnFrame;
+    }
+
+    hash() {
+        return `${this.ownerId}:${this.x.toFixed(6)}:${this.y.toFixed(6)}:${this.spawnFrame}`;
+    }
+}
+
+class Food {
+    constructor(id, x, y) {
+        this.id = id;
+        this.x = x;
+        this.y = y;
+        this.alive = true;
+    }
+
+    hash() {
+        return `${this.id}:${this.x}:${this.y}:${this.alive}`;
+    }
+}
+
+class Simulation {
+    constructor() {
+        this.frame = 0;
+        this.snakes = new Map();
+        this.segments = [];
+        this.food = [];
+        this.foodIdCounter = 0;
+        this.segmentCounter = 0;
+        this.stateHashes = [];
+    }
+
+    // EXACT COPY of movement logic from game
+    updateSnake(snake, input) {
+        if (!snake.alive) return;
+
+        if (input?.target) {
+            const dx = input.target.x - snake.x;
+            const dy = input.target.y - snake.y;
+            const lenSq = dx * dx + dy * dy;
+
+            if (lenSq > 1) {
+                const len = Math.sqrt(lenSq);
+                // Desired direction (normalized)
+                const desiredX = dx / len;
+                const desiredY = dy / len;
+
+                // Lerp toward desired direction
+                let newDirX = snake.dirX + (desiredX - snake.dirX) * TURN_SPEED;
+                let newDirY = snake.dirY + (desiredY - snake.dirY) * TURN_SPEED;
+
+                // Re-normalize
+                const newLen = Math.sqrt(newDirX * newDirX + newDirY * newDirY);
+                if (newLen > 0.001) {
+                    snake.dirX = newDirX / newLen;
+                    snake.dirY = newDirY / newLen;
+                }
+            }
+        }
+
+        // Boost
+        const boostPressed = input?.boost === true;
+        const isBoosting = boostPressed && snake.length > MIN_BOOST_LENGTH;
+        const currentSpeed = isBoosting ? BOOST_SPEED : SPEED;
+        snake.boosting = isBoosting ? 1 : 0;
+
+        if (isBoosting) {
+            snake.boostFrames++;
+            if (snake.boostFrames >= BOOST_COST_FRAMES) {
+                snake.length--;
+                snake.boostFrames = 0;
+                // Spawn food behind
+                this.food.push(new Food(
+                    this.foodIdCounter++,
+                    Math.round(snake.x - snake.dirX * 30),
+                    Math.round(snake.y - snake.dirY * 30)
+                ));
+            }
+        } else {
+            snake.boostFrames = 0;
+        }
+
+        // Move using UPDATED direction (matches game behavior)
+        snake.x += snake.dirX * currentSpeed;
+        snake.y += snake.dirY * currentSpeed;
+
+        // Boundary check
+        if (snake.x < 0 || snake.x > WORLD_WIDTH || snake.y < 0 || snake.y > WORLD_HEIGHT) {
+            snake.alive = false;
+        }
+
+        // Segment spawning
+        const frameDiff = this.frame - snake.lastSpawnFrame;
+        if (frameDiff >= SEGMENT_SPAWN_INTERVAL) {
+            this.segments.push(new Segment(
+                snake.id,
+                snake.x,
+                snake.y,
+                this.frame
+            ));
+            snake.lastSpawnFrame = this.frame;
+        }
+    }
+
+    // Tail cleanup
+    cleanupSegments() {
+        const maxAgeByOwner = new Map();
+        for (const [id, snake] of this.snakes) {
+            if (snake.alive) {
+                maxAgeByOwner.set(id, this.frame - (snake.length * SEGMENT_SPAWN_INTERVAL));
+            }
+        }
+
+        this.segments = this.segments.filter(seg => {
+            const oldest = maxAgeByOwner.get(seg.ownerId);
+            return oldest === undefined || seg.spawnFrame >= oldest;
+        });
+    }
+
+    step(inputs) {
+        // Update all snakes
+        for (const [id, snake] of this.snakes) {
+            this.updateSnake(snake, inputs.get(id));
+        }
+
+        // Cleanup segments
+        this.cleanupSegments();
+
+        this.frame++;
+
+        // Record hash
+        this.stateHashes.push(this.computeHash());
+    }
+
+    computeHash() {
+        // Sort snakes by ID for deterministic ordering
+        const snakeIds = [...this.snakes.keys()].sort((a, b) => a - b);
+        let hash = `F${this.frame}|`;
+
+        for (const id of snakeIds) {
+            hash += this.snakes.get(id).hash() + '|';
+        }
+
+        // Sort segments by spawnFrame then x then y
+        const sortedSegs = [...this.segments].sort((a, b) => {
+            if (a.spawnFrame !== b.spawnFrame) return a.spawnFrame - b.spawnFrame;
+            if (a.x !== b.x) return a.x - b.x;
+            return a.y - b.y;
+        });
+
+        hash += `SEG${sortedSegs.length}|`;
+
+        return hash;
+    }
+
+    getFullHash() {
+        return this.stateHashes.join('\n');
+    }
+}
+
+// ============================================================================
+// TEST CASES
+// ============================================================================
+
+// Test 1: Basic movement without input
+function testBasicMovement() {
+    log('\n=== Test 1: Basic Movement (no input) ===', 'info');
+
+    const sim = new Simulation();
+    sim.snakes.set(1, new SnakeState(1, 500, 500));
+
+    const inputs = new Map();
+
+    for (let i = 0; i < 60; i++) {
+        sim.step(inputs);
+    }
+
+    const snake = sim.snakes.get(1);
+    const expectedX = 500 + (60 * SPEED);
+
+    logState(`Test 1 - Frame 60:`);
+    logState(`  x: ${snake.x} (expected ~${expectedX})`);
+    logState(`  y: ${snake.y} (expected 500)`);
+    logState(`  dirX: ${snake.dirX}, dirY: ${snake.dirY}`);
+    logState(`  segments: ${sim.segments.length}`);
+
+    const passed = Math.abs(snake.x - expectedX) < 0.001 && Math.abs(snake.y - 500) < 0.001;
+    log(`  Position: ${passed ? 'PASS' : 'FAIL'}`, passed ? 'pass' : 'fail');
+
+    return passed;
+}
+
+// Test 2: Movement with constant target
+function testConstantTarget() {
+    log('\n=== Test 2: Movement with constant target ===', 'info');
+
+    const sim = new Simulation();
+    sim.snakes.set(1, new SnakeState(1, 500, 500));
+
+    const inputs = new Map();
+    inputs.set(1, { target: { x: 1000, y: 800 }, boost: false });
+
+    for (let i = 0; i < 100; i++) {
+        sim.step(inputs);
+    }
+
+    const snake = sim.snakes.get(1);
+
+    logState(`Test 2 - Frame 100:`);
+    logState(`  x: ${snake.x}, y: ${snake.y}`);
+    logState(`  dirX: ${snake.dirX}, dirY: ${snake.dirY}`);
+
+    // Run a second simulation with same inputs - should match exactly
+    const sim2 = new Simulation();
+    sim2.snakes.set(1, new SnakeState(1, 500, 500));
+
+    for (let i = 0; i < 100; i++) {
+        sim2.step(inputs);
+    }
+
+    const snake2 = sim2.snakes.get(1);
+
+    const passed = snake.x === snake2.x && snake.y === snake2.y &&
+                   snake.dirX === snake2.dirX && snake.dirY === snake2.dirY;
+
+    log(`  Sim1: (${snake.x.toFixed(4)}, ${snake.y.toFixed(4)})`, 'info');
+    log(`  Sim2: (${snake2.x.toFixed(4)}, ${snake2.y.toFixed(4)})`, 'info');
+    log(`  Match: ${passed ? 'PASS' : 'FAIL'}`, passed ? 'pass' : 'fail');
+
+    return passed;
+}
+
+// Test 3: Changing targets
+function testChangingTargets() {
+    log('\n=== Test 3: Changing targets ===', 'info');
+
+    const targetSequence = [
+        { frame: 0, target: { x: 1000, y: 500 } },
+        { frame: 20, target: { x: 500, y: 1000 } },
+        { frame: 40, target: { x: 0, y: 500 } },
+        { frame: 60, target: { x: 500, y: 0 } },
+        { frame: 80, target: { x: 1000, y: 1000 } },
+    ];
+
+    function runSim() {
+        const sim = new Simulation();
+        sim.snakes.set(1, new SnakeState(1, 500, 500));
+
+        let targetIdx = 0;
+        const inputs = new Map();
+
+        for (let i = 0; i < 100; i++) {
+            while (targetIdx < targetSequence.length && targetSequence[targetIdx].frame <= i) {
+                targetIdx++;
+            }
+            const target = targetSequence[Math.max(0, targetIdx - 1)].target;
+            inputs.set(1, { target, boost: false });
+            sim.step(inputs);
+        }
+
+        return sim;
+    }
+
+    const sim1 = runSim();
+    const sim2 = runSim();
+
+    const s1 = sim1.snakes.get(1);
+    const s2 = sim2.snakes.get(1);
+
+    logState(`Test 3 - Frame 100:`);
+    logState(`  Sim1: x=${s1.x.toFixed(6)}, y=${s1.y.toFixed(6)}`);
+    logState(`  Sim2: x=${s2.x.toFixed(6)}, y=${s2.y.toFixed(6)}`);
+
+    const passed = s1.x === s2.x && s1.y === s2.y;
+    log(`  Match: ${passed ? 'PASS' : 'FAIL'}`, passed ? 'pass' : 'fail');
+
+    return passed;
+}
+
+// Test 4: Boost mechanics
+function testBoostMechanics() {
+    log('\n=== Test 4: Boost mechanics ===', 'info');
+
+    function runSim() {
+        const sim = new Simulation();
+        sim.snakes.set(1, new SnakeState(1, 500, 500));
+
+        const inputs = new Map();
+
+        for (let i = 0; i < 100; i++) {
+            // Boost from frame 10-50
+            const boosting = i >= 10 && i < 50;
+            inputs.set(1, { target: { x: 1000, y: 500 }, boost: boosting });
+            sim.step(inputs);
+        }
+
+        return sim;
+    }
+
+    const sim1 = runSim();
+    const sim2 = runSim();
+
+    const s1 = sim1.snakes.get(1);
+    const s2 = sim2.snakes.get(1);
+
+    logState(`Test 4 - After boosting:`);
+    logState(`  Sim1: x=${s1.x.toFixed(6)}, length=${s1.length}`);
+    logState(`  Sim2: x=${s2.x.toFixed(6)}, length=${s2.length}`);
+    logState(`  Food spawned: ${sim1.food.length}`);
+
+    const passed = s1.x === s2.x && s1.y === s2.y && s1.length === s2.length;
+    log(`  Match: ${passed ? 'PASS' : 'FAIL'}`, passed ? 'pass' : 'fail');
+
+    return passed;
+}
+
+// Test 5: Two snakes
+function testTwoSnakes() {
+    log('\n=== Test 5: Two snakes ===', 'info');
+
+    function runSim() {
+        const sim = new Simulation();
+        sim.snakes.set(1, new SnakeState(1, 500, 500));
+        sim.snakes.set(2, new SnakeState(2, 1500, 1500));
+
+        const inputs = new Map();
+
+        for (let i = 0; i < 100; i++) {
+            // Snake 1 moves right
+            inputs.set(1, { target: { x: 2000, y: 500 }, boost: false });
+            // Snake 2 moves left
+            inputs.set(2, { target: { x: 0, y: 1500 }, boost: i % 10 === 0 });
+            sim.step(inputs);
+        }
+
+        return sim;
+    }
+
+    const sim1 = runSim();
+    const sim2 = runSim();
+
+    const passed = sim1.computeHash() === sim2.computeHash();
+
+    logState(`Test 5 - Two snakes:`);
+    logState(`  Hash 1: ${sim1.computeHash().substring(0, 100)}...`);
+    logState(`  Hash 2: ${sim2.computeHash().substring(0, 100)}...`);
+
+    log(`  Match: ${passed ? 'PASS' : 'FAIL'}`, passed ? 'pass' : 'fail');
+
+    return passed;
+}
+
+// Test 6: Floating point precision test
+function testFloatingPointPrecision() {
+    log('\n=== Test 6: Floating point precision ===', 'info');
+
+    // Test the exact calculations used in the game
+    const results = [];
+
+    for (let run = 0; run < 5; run++) {
+        let dirX = 1, dirY = 0;
+        let x = 500, y = 500;
+
+        for (let i = 0; i < 200; i++) {
+            const targetX = 1000 + i * 10;
+            const targetY = 800 + i * 5;
+
+            const dx = targetX - x;
+            const dy = targetY - y;
+            const lenSq = dx * dx + dy * dy;
+
+            if (lenSq > 1) {
+                const len = Math.sqrt(lenSq);
+                const desiredX = dx / len;
+                const desiredY = dy / len;
+
+                let newDirX = dirX + (desiredX - dirX) * TURN_SPEED;
+                let newDirY = dirY + (desiredY - dirY) * TURN_SPEED;
+
+                const newLen = Math.sqrt(newDirX * newDirX + newDirY * newDirY);
+                if (newLen > 0.001) {
+                    dirX = newDirX / newLen;
+                    dirY = newDirY / newLen;
+                }
+            }
+
+            x += dirX * SPEED;
+            y += dirY * SPEED;
+        }
+
+        results.push({ x, y, dirX, dirY });
+    }
+
+    // Check all runs match
+    let passed = true;
+    for (let i = 1; i < results.length; i++) {
+        if (results[i].x !== results[0].x || results[i].y !== results[0].y) {
+            passed = false;
+            log(`  Run ${i} differs from run 0!`, 'fail');
+        }
+    }
+
+    logState(`Test 6 - Floating point consistency:`);
+    for (let i = 0; i < results.length; i++) {
+        logState(`  Run ${i}: x=${results[i].x}, y=${results[i].y}`);
+    }
+
+    log(`  Consistency: ${passed ? 'PASS' : 'FAIL'}`, passed ? 'pass' : 'fail');
+
+    // Also log raw values for cross-browser comparison
+    log(`  Final x: ${results[0].x}`, 'info');
+    log(`  Final y: ${results[0].y}`, 'info');
+    log(`  Final dirX: ${results[0].dirX}`, 'info');
+    log(`  Final dirY: ${results[0].dirY}`, 'info');
+
+    return passed;
+}
+
+// Test 7: Long simulation for drift detection
+function testLongSimulation() {
+    log('\n=== Test 7: Long simulation (1000 frames) ===', 'info');
+
+    const sim = new Simulation();
+    sim.snakes.set(1, new SnakeState(1, 500, 500));
+    sim.snakes.set(2, new SnakeState(2, 1000, 1000));
+
+    const inputs = new Map();
+
+    // Complex input pattern
+    for (let i = 0; i < 1000; i++) {
+        const angle1 = i * 0.1;
+        const angle2 = i * 0.07 + 1;
+
+        inputs.set(1, {
+            target: {
+                x: Math.round(500 + Math.cos(angle1) * 500),
+                y: Math.round(500 + Math.sin(angle1) * 500)
+            },
+            boost: i % 50 < 20
+        });
+
+        inputs.set(2, {
+            target: {
+                x: Math.round(1000 + Math.cos(angle2) * 300),
+                y: Math.round(1000 + Math.sin(angle2) * 300)
+            },
+            boost: i % 30 < 10
+        });
+
+        sim.step(inputs);
+    }
+
+    const s1 = sim.snakes.get(1);
+    const s2 = sim.snakes.get(2);
+
+    logState(`Test 7 - After 1000 frames:`);
+    logState(`  Snake 1: x=${s1.x.toFixed(6)}, y=${s1.y.toFixed(6)}, length=${s1.length}`);
+    logState(`  Snake 2: x=${s2.x.toFixed(6)}, y=${s2.y.toFixed(6)}, length=${s2.length}`);
+    logState(`  Segments: ${sim.segments.length}`);
+    logState(`  Food: ${sim.food.length}`);
+
+    // Return the final hash for cross-browser comparison
+    const finalHash = sim.computeHash();
+    log(`  Final hash: ${finalHash}`, 'info');
+
+    return finalHash;
+}
+
+// ============================================================================
+// RUN ALL TESTS
+// ============================================================================
+
+function runAllTests() {
+    log('Starting simulation determinism tests...\n', 'info');
+    log(`Browser: ${navigator.userAgent}`, 'info');
+    log(`Time: ${new Date().toISOString()}`, 'info');
+
+    let allPassed = true;
+
+    allPassed = testBasicMovement() && allPassed;
+    allPassed = testConstantTarget() && allPassed;
+    allPassed = testChangingTargets() && allPassed;
+    allPassed = testBoostMechanics() && allPassed;
+    allPassed = testTwoSnakes() && allPassed;
+    allPassed = testFloatingPointPrecision() && allPassed;
+
+    // Long simulation returns hash instead of pass/fail
+    const longSimHash = testLongSimulation();
+
+    log('\n' + '='.repeat(60), 'info');
+
+    if (allPassed) {
+        log('ALL DETERMINISM TESTS PASSED', 'pass');
+    } else {
+        log('SOME TESTS FAILED', 'fail');
+    }
+
+    // Create a final fingerprint hash for cross-browser comparison
+    const fingerprint = {
+        tests: allPassed,
+        longSimHash,
+        // Add specific floating point checks
+        sqrtCheck: Math.sqrt(2),
+        divCheck: 1 / 3,
+        precision: 0.1 + 0.2,
+    };
+
+    const fingerprintStr = JSON.stringify(fingerprint);
+    hashOutput.innerHTML = `
+        <div class="${allPassed ? 'pass' : 'fail'}">Tests: ${allPassed ? 'ALL PASSED' : 'SOME FAILED'}</div>
+        <div class="info" style="margin-top: 10px;">
+            <strong>Cross-Browser Comparison Hash:</strong><br>
+            <code style="word-break: break-all;">${longSimHash}</code>
+        </div>
+        <div class="warn" style="margin-top: 10px;">
+            sqrt(2) = ${fingerprint.sqrtCheck}<br>
+            1/3 = ${fingerprint.divCheck}<br>
+            0.1+0.2 = ${fingerprint.precision}
+        </div>
+    `;
+
+    log('\n=== CROSS-BROWSER FINGERPRINT ===', 'warn');
+    log(`sqrt(2) = ${fingerprint.sqrtCheck}`, 'warn');
+    log(`1/3 = ${fingerprint.divCheck}`, 'warn');
+    log(`0.1+0.2 = ${fingerprint.precision}`, 'warn');
+    log('\nCopy the "Cross-Browser Comparison Hash" and compare with other browsers.', 'info');
+    log('If they differ, the simulation will desync in multiplayer.', 'info');
+}
+
+runAllTests();
+</script>
+</body>
+</html>

@@ -1,0 +1,315 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <meta charset="UTF-8">
+    <title>Snake Determinism Tests</title>
+    <style>
+        body { font-family: monospace; padding: 20px; background: #111; color: #0f0; }
+        .pass { color: #0f0; }
+        .fail { color: #f00; }
+        .info { color: #0ff; }
+        pre { background: #222; padding: 10px; overflow-x: auto; }
+    </style>
+</head>
+<body>
+    <h1>Snake Determinism Tests</h1>
+    <div id="output"></div>
+
+<script src="http://localhost:3001/dist/modu.iife.js"></script>
+<script>
+const output = document.getElementById('output');
+
+function log(msg, type = '') {
+    const div = document.createElement('div');
+    div.className = type;
+    div.textContent = msg;
+    output.appendChild(div);
+    console.log(msg);
+}
+
+function assertEqual(a, b, name) {
+    if (a === b) {
+        log(`  PASS: ${name} = ${a}`, 'pass');
+        return true;
+    } else {
+        log(`  FAIL: ${name} - expected ${b}, got ${a}`, 'fail');
+        return false;
+    }
+}
+
+function assertClose(a, b, epsilon, name) {
+    if (Math.abs(a - b) < epsilon) {
+        log(`  PASS: ${name} = ${a} (within ${epsilon})`, 'pass');
+        return true;
+    } else {
+        log(`  FAIL: ${name} - expected ~${b}, got ${a} (diff: ${Math.abs(a-b)})`, 'fail');
+        return false;
+    }
+}
+
+// Constants (same as game)
+const SPEED = 8;
+const TURN_SPEED = 0.15;
+const SEGMENT_SPACING = 8;
+
+// Test direction calculation determinism
+function testDirectionCalculation() {
+    log('\n=== Test: Direction Calculation Determinism ===', 'info');
+
+    let passed = true;
+
+    // Run same calculation multiple times
+    const results = [];
+    for (let run = 0; run < 3; run++) {
+        let dirX = 1, dirY = 0;
+
+        // Simulate 100 frames of turning toward target
+        const targetX = 500, targetY = 300;
+        const posX = 100, posY = 100;
+
+        for (let frame = 0; frame < 100; frame++) {
+            const dx = targetX - posX;
+            const dy = targetY - posY;
+            const len = Math.sqrt(dx * dx + dy * dy);
+
+            if (len > 0.1) {
+                const desiredX = dx / len;
+                const desiredY = dy / len;
+
+                let newDirX = dirX + (desiredX - dirX) * TURN_SPEED;
+                let newDirY = dirY + (desiredY - dirY) * TURN_SPEED;
+
+                const newLen = Math.sqrt(newDirX * newDirX + newDirY * newDirY);
+                if (newLen > 0.001) {
+                    dirX = newDirX / newLen;
+                    dirY = newDirY / newLen;
+                }
+            }
+        }
+
+        results.push({ dirX, dirY });
+    }
+
+    // Compare all runs
+    for (let i = 1; i < results.length; i++) {
+        passed = assertEqual(results[i].dirX, results[0].dirX, `Run ${i} dirX`) && passed;
+        passed = assertEqual(results[i].dirY, results[0].dirY, `Run ${i} dirY`) && passed;
+    }
+
+    return passed;
+}
+
+// Test segment spawn determinism
+function testSegmentSpawnDeterminism() {
+    log('\n=== Test: Segment Spawn Determinism ===', 'info');
+
+    let passed = true;
+    const results = [];
+
+    for (let run = 0; run < 3; run++) {
+        let distanceTraveled = 0;
+        let segmentSeq = 0;
+        const segments = [];
+
+        // Simulate 100 frames of movement
+        for (let frame = 0; frame < 100; frame++) {
+            const speed = SPEED; // Normal speed
+            distanceTraveled += speed;
+
+            while (distanceTraveled >= SEGMENT_SPACING) {
+                distanceTraveled -= SEGMENT_SPACING;
+                segments.push({ frame, seq: segmentSeq++ });
+            }
+        }
+
+        results.push({ segmentCount: segments.length, finalSeq: segmentSeq, finalDist: distanceTraveled });
+    }
+
+    for (let i = 1; i < results.length; i++) {
+        passed = assertEqual(results[i].segmentCount, results[0].segmentCount, `Run ${i} segmentCount`) && passed;
+        passed = assertEqual(results[i].finalSeq, results[0].finalSeq, `Run ${i} finalSeq`) && passed;
+        passed = assertEqual(results[i].finalDist, results[0].finalDist, `Run ${i} finalDist`) && passed;
+    }
+
+    return passed;
+}
+
+// Test boost segment spawn determinism
+function testBoostDeterminism() {
+    log('\n=== Test: Boost Determinism ===', 'info');
+
+    let passed = true;
+    const BOOST_SPEED = 18;
+    const BOOST_FRAMES_PER_LENGTH = 10;
+
+    const results = [];
+
+    for (let run = 0; run < 3; run++) {
+        let distanceTraveled = 0;
+        let segmentSeq = 0;
+        let boostFrames = 0;
+        let length = 15;
+        const segments = [];
+
+        // Simulate 50 frames of boosting
+        for (let frame = 0; frame < 50; frame++) {
+            // Boost logic
+            boostFrames++;
+            if (boostFrames >= BOOST_FRAMES_PER_LENGTH) {
+                length--;
+                boostFrames = 0;
+            }
+
+            // Segment spawn
+            distanceTraveled += BOOST_SPEED;
+            while (distanceTraveled >= SEGMENT_SPACING) {
+                distanceTraveled -= SEGMENT_SPACING;
+                segments.push({ frame, seq: segmentSeq++ });
+            }
+        }
+
+        results.push({
+            segmentCount: segments.length,
+            finalSeq: segmentSeq,
+            finalDist: distanceTraveled,
+            finalLength: length,
+            finalBoostFrames: boostFrames
+        });
+    }
+
+    for (let i = 1; i < results.length; i++) {
+        passed = assertEqual(results[i].segmentCount, results[0].segmentCount, `Run ${i} segmentCount`) && passed;
+        passed = assertEqual(results[i].finalLength, results[0].finalLength, `Run ${i} finalLength`) && passed;
+        passed = assertEqual(results[i].finalBoostFrames, results[0].finalBoostFrames, `Run ${i} finalBoostFrames`) && passed;
+    }
+
+    return passed;
+}
+
+// Test two simulations with same inputs produce same output
+function testDualSimulation() {
+    log('\n=== Test: Dual Simulation Comparison ===', 'info');
+
+    let passed = true;
+
+    // Predefined inputs (same for both simulations)
+    const inputs = [
+        { frame: 0, target: { x: 500, y: 300 }, boost: false },
+        { frame: 10, target: { x: 600, y: 400 }, boost: false },
+        { frame: 20, target: { x: 400, y: 500 }, boost: true },
+        { frame: 30, target: { x: 300, y: 200 }, boost: true },
+        { frame: 40, target: { x: 700, y: 100 }, boost: false },
+    ];
+
+    function runSimulation() {
+        let x = 200, y = 200;
+        let dirX = 1, dirY = 0;
+        let distanceTraveled = 0;
+        let segmentSeq = 0;
+        let boostFrames = 0;
+        let length = 15;
+        let inputIdx = 0;
+        let currentTarget = inputs[0].target;
+        let currentBoost = inputs[0].boost;
+
+        const states = [];
+
+        for (let frame = 0; frame < 50; frame++) {
+            // Update input
+            while (inputIdx < inputs.length && inputs[inputIdx].frame <= frame) {
+                currentTarget = inputs[inputIdx].target;
+                currentBoost = inputs[inputIdx].boost;
+                inputIdx++;
+            }
+
+            // Direction update
+            const dx = currentTarget.x - x;
+            const dy = currentTarget.y - y;
+            const len = Math.sqrt(dx * dx + dy * dy);
+
+            if (len > 0.1) {
+                const desiredX = dx / len;
+                const desiredY = dy / len;
+
+                let newDirX = dirX + (desiredX - dirX) * TURN_SPEED;
+                let newDirY = dirY + (desiredY - dirY) * TURN_SPEED;
+
+                const newLen = Math.sqrt(newDirX * newDirX + newDirY * newDirY);
+                if (newLen > 0.001) {
+                    dirX = newDirX / newLen;
+                    dirY = newDirY / newLen;
+                }
+            }
+
+            // Boost logic
+            const speed = currentBoost ? 18 : 8;
+            if (currentBoost && length > 10) {
+                boostFrames++;
+                if (boostFrames >= 10) {
+                    length--;
+                    boostFrames = 0;
+                }
+            } else {
+                boostFrames = 0;
+            }
+
+            // Movement
+            x += dirX * speed;
+            y += dirY * speed;
+
+            // Segment spawn
+            distanceTraveled += speed;
+            while (distanceTraveled >= SEGMENT_SPACING) {
+                distanceTraveled -= SEGMENT_SPACING;
+                segmentSeq++;
+            }
+
+            // Record state every 10 frames
+            if (frame % 10 === 9) {
+                states.push({ frame, x, y, dirX, dirY, length, segmentSeq });
+            }
+        }
+
+        return states;
+    }
+
+    const sim1 = runSimulation();
+    const sim2 = runSimulation();
+
+    for (let i = 0; i < sim1.length; i++) {
+        const s1 = sim1[i], s2 = sim2[i];
+        log(`Frame ${s1.frame}:`, 'info');
+        passed = assertEqual(s1.x, s2.x, `  x`) && passed;
+        passed = assertEqual(s1.y, s2.y, `  y`) && passed;
+        passed = assertEqual(s1.dirX, s2.dirX, `  dirX`) && passed;
+        passed = assertEqual(s1.dirY, s2.dirY, `  dirY`) && passed;
+        passed = assertEqual(s1.length, s2.length, `  length`) && passed;
+        passed = assertEqual(s1.segmentSeq, s2.segmentSeq, `  segmentSeq`) && passed;
+    }
+
+    return passed;
+}
+
+// Run all tests
+async function runTests() {
+    log('Starting determinism tests...\n', 'info');
+
+    let allPassed = true;
+
+    allPassed = testDirectionCalculation() && allPassed;
+    allPassed = testSegmentSpawnDeterminism() && allPassed;
+    allPassed = testBoostDeterminism() && allPassed;
+    allPassed = testDualSimulation() && allPassed;
+
+    log('\n' + '='.repeat(50), 'info');
+    if (allPassed) {
+        log('ALL TESTS PASSED', 'pass');
+    } else {
+        log('SOME TESTS FAILED', 'fail');
+    }
+}
+
+runTests();
+</script>
+</body>
+</html>

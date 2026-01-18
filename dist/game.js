@@ -97,7 +97,6 @@ var SnakeGame = (() => {
   var mouseX;
   var mouseY;
   var mouseDown = false;
-  var isInCatchUp = false;
   var SnakeHead = (0, import_modu_engine.defineComponent)("SnakeHead", {
     length: INITIAL_LENGTH,
     dirX: 1,
@@ -115,6 +114,8 @@ var SnakeGame = (() => {
   function getLocalClientId() {
     const clientId = game.localClientId;
     if (!clientId || typeof clientId !== "string")
+      return null;
+    if (clientId.startsWith("local-"))
       return null;
     return game.internClientId(clientId);
   }
@@ -167,13 +168,11 @@ var SnakeGame = (() => {
       lastSpawnFrame: game.frame + 10
     });
   }
-  function spawnFood(skipSpawn = false) {
+  function spawnFood() {
     const color = game.internString("color", COLORS[(0, import_modu_engine.dRandom)() * COLORS.length | 0]);
     const x = 50 + (0, import_modu_engine.dRandom)() * (WORLD_WIDTH - 100) | 0;
     const y = 50 + (0, import_modu_engine.dRandom)() * (WORLD_HEIGHT - 100) | 0;
-    if (!skipSpawn) {
-      game.spawn("food", { x, y, color });
-    }
+    game.spawn("food", { x, y, color });
   }
   function defineEntities() {
     game.defineEntity("snake-head").with(import_modu_engine.Transform2D).with(import_modu_engine.Sprite, { shape: import_modu_engine.SHAPE_CIRCLE, radius: BASE_HEAD_RADIUS, layer: 2 }).with(import_modu_engine.Body2D, { shapeType: import_modu_engine.SHAPE_CIRCLE, radius: BASE_HEAD_RADIUS, bodyType: import_modu_engine.BODY_KINEMATIC, isSensor: true }).with(import_modu_engine.Player).with(SnakeHead).register();
@@ -247,13 +246,11 @@ var SnakeGame = (() => {
           if (sh.boostFrames >= BOOST_COST_FRAMES) {
             sh.length--;
             sh.boostFrames = 0;
-            if (!isInCatchUp || game.isAuthority()) {
-              game.spawn("food", {
-                x: t.x - sh.dirX * 30 | 0,
-                y: t.y - sh.dirY * 30 | 0,
-                color: head.get(import_modu_engine.Sprite).color
-              });
-            }
+            game.spawn("food", {
+              x: t.x - sh.dirX * 30 | 0,
+              y: t.y - sh.dirY * 30 | 0,
+              color: head.get(import_modu_engine.Sprite).color
+            });
           }
         } else {
           sh.boostFrames = 0;
@@ -268,18 +265,16 @@ var SnakeGame = (() => {
         }
         const frameDiff = game.frame - sh.lastSpawnFrame;
         if (frameDiff >= SEGMENT_SPAWN_INTERVAL) {
-          if (!isInCatchUp || game.isAuthority()) {
-            const color = head.get(import_modu_engine.Sprite).color;
-            const segment = game.spawn("snake-segment", {
-              x: t.x,
-              y: t.y,
-              color,
-              ownerId: clientId,
-              spawnFrame: game.frame
-            });
-            if (game.frame % 100 === 0) {
-              console.log(`[Spawn] frame=${game.frame} segId=${segment.id} owner=${clientId} isAuth=${game.isAuthority()} catchUp=${isInCatchUp}`);
-            }
+          const color = head.get(import_modu_engine.Sprite).color;
+          const segment = game.spawn("snake-segment", {
+            x: t.x,
+            y: t.y,
+            color,
+            ownerId: clientId,
+            spawnFrame: game.frame
+          });
+          if (game.frame % 100 === 0) {
+            console.log(`[Spawn] frame=${game.frame} segId=${segment.id} owner=${clientId} isAuth=${game.isAuthority()}`);
           }
           sh.lastSpawnFrame = game.frame;
         }
@@ -309,8 +304,7 @@ var SnakeGame = (() => {
     game.addSystem(() => {
       const shouldSpawn = (0, import_modu_engine.dRandom)() < FOOD_SPAWN_CHANCE;
       if (game.getEntitiesByType("food").length < MAX_FOOD && shouldSpawn) {
-        const skipSpawn = isInCatchUp && !game.isAuthority();
-        spawnFood(skipSpawn);
+        spawnFood();
       }
     }, { phase: "update" });
     game.addSystem(() => {
@@ -605,34 +599,7 @@ var SnakeGame = (() => {
         killSnake(game.internClientId(clientId));
       },
       onSnapshot(entities) {
-        isInCatchUp = true;
-        const snapshotFrame = game.frame;
-        console.log(`[onSnapshot] Entering catch-up mode at frame ${snapshotFrame}, ${entities.length} entities`);
-        const maxSpawnFrameByOwner = /* @__PURE__ */ new Map();
-        for (const entity of entities) {
-          if (entity.type === "snake-segment" && !entity.destroyed) {
-            const seg = entity.get(SnakeSegment);
-            const current = maxSpawnFrameByOwner.get(seg.ownerId) ?? 0;
-            if (seg.spawnFrame > current) {
-              maxSpawnFrameByOwner.set(seg.ownerId, seg.spawnFrame);
-            }
-          }
-        }
-        for (const entity of entities) {
-          if (entity.type === "snake-head" && !entity.destroyed) {
-            const clientId = entity.get(import_modu_engine.Player).clientId;
-            const sh = entity.get(SnakeHead);
-            const maxSegFrame = maxSpawnFrameByOwner.get(clientId);
-            if (maxSegFrame !== void 0 && maxSegFrame > sh.lastSpawnFrame) {
-              console.log(`[onSnapshot] Snake ${clientId}: syncing lastSpawnFrame ${sh.lastSpawnFrame} -> ${maxSegFrame}`);
-              sh.lastSpawnFrame = maxSegFrame;
-            }
-          }
-        }
-        setTimeout(() => {
-          console.log(`[onSnapshot] Exiting catch-up mode at frame ${game.frame}`);
-          isInCatchUp = false;
-        }, 0);
+        console.log(`[onSnapshot] Received snapshot at frame ${game.frame}, ${entities.length} entities`);
       }
     });
     (0, import_modu_engine.enableDebugUI)(game);

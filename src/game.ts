@@ -96,19 +96,6 @@ let mouseX: number;
 let mouseY: number;
 let mouseDown = false;
 
-// Track catch-up state to skip segment spawning during late joiner catch-up.
-// When a client joins late, they receive a snapshot and must "catch up" by
-// simulating frames that the authority has already processed. During this
-// catch-up, we skip segment spawning because:
-// 1. Those segments were already spawned by the authority with specific entity IDs
-// 2. If we spawn them again, we'll get different entity IDs (divergence)
-// 3. The next snapshot from authority will include all the correct segments
-//
-// We set this to true in onSnapshot and false after the first real tick.
-// The catch-up runs synchronously before the game loop starts, so the first
-// tick after onSnapshot will be a real tick (not catch-up).
-let isInCatchUp = false;
-
 // ============================================
 // Components (all fields default to i32/fixed-point for determinism)
 // ============================================
@@ -136,6 +123,8 @@ const SnakeSegment = defineComponent('SnakeSegment', {
 function getLocalClientId(): number | null {
     const clientId = game.localClientId;
     if (!clientId || typeof clientId !== 'string') return null;
+    // Don't intern temporary local clientIds - they're placeholders before real connection
+    if (clientId.startsWith('local-')) return null;
     return game.internClientId(clientId);
 }
 
@@ -202,15 +191,11 @@ function spawnSnake(clientId: string): void {
     });
 }
 
-function spawnFood(skipSpawn = false): void {
-    // Always consume random values to keep RNG in sync across all clients
+function spawnFood(): void {
     const color = game.internString('color', COLORS[(Math.random() * COLORS.length) | 0]);
     const x = 50 + (Math.random() * (WORLD_WIDTH - 100)) | 0;
     const y = 50 + (Math.random() * (WORLD_HEIGHT - 100)) | 0;
-
-    if (!skipSpawn) {
-        game.spawn('food', { x, y, color });
-    }
+    game.spawn('food', { x, y, color });
 }
 
 // ============================================
@@ -329,14 +314,11 @@ function setupSystems(): void {
                 if (sh.boostFrames >= BOOST_COST_FRAMES) {
                     sh.length--;
                     sh.boostFrames = 0;
-                    // Skip food spawning during catch-up for non-authority
-                    if (!isInCatchUp || game.isAuthority()) {
-                        game.spawn('food', {
-                            x: (t.x - sh.dirX * 30) | 0,
-                            y: (t.y - sh.dirY * 30) | 0,
-                            color: head.get(Sprite).color
-                        });
-                    }
+                    game.spawn('food', {
+                        x: (t.x - sh.dirX * 30) | 0,
+                        y: (t.y - sh.dirY * 30) | 0,
+                        color: head.get(Sprite).color
+                    });
                 }
             } else {
                 sh.boostFrames = 0;
@@ -355,29 +337,19 @@ function setupSystems(): void {
                 continue; // Skip segment spawning for dead snake
             }
 
-            // Segment spawning
-            // During catch-up, we skip spawning because:
-            // 1. The authority has already spawned segments for frames after the snapshot
-            // 2. Those segments have specific entity IDs that we can't reproduce
-            // 3. The next snapshot will include the correct segments
-            //
-            // The onSnapshot callback adjusts lastSpawnFrame to prevent attempting
-            // spawns for segments that already exist in the snapshot.
+            // Segment spawning - trust engine's deterministic catch-up
             const frameDiff = game.frame - sh.lastSpawnFrame;
             if (frameDiff >= SEGMENT_SPAWN_INTERVAL) {
-                // Skip spawning during catch-up for non-authority clients
-                if (!isInCatchUp || game.isAuthority()) {
-                    const color = head.get(Sprite).color;
-                    const segment = game.spawn('snake-segment', {
-                        x: t.x, y: t.y,
-                        color: color,
-                        ownerId: clientId,
-                        spawnFrame: game.frame
-                    });
-                    // Debug: log segment spawning to help diagnose issues
-                    if (game.frame % 100 === 0) {
-                        console.log(`[Spawn] frame=${game.frame} segId=${segment.id} owner=${clientId} isAuth=${game.isAuthority()} catchUp=${isInCatchUp}`);
-                    }
+                const color = head.get(Sprite).color;
+                const segment = game.spawn('snake-segment', {
+                    x: t.x, y: t.y,
+                    color: color,
+                    ownerId: clientId,
+                    spawnFrame: game.frame
+                });
+                // Debug: log segment spawning to help diagnose issues
+                if (game.frame % 100 === 0) {
+                    console.log(`[Spawn] frame=${game.frame} segId=${segment.id} owner=${clientId} isAuth=${game.isAuthority()}`);
                 }
                 sh.lastSpawnFrame = game.frame;
             }
@@ -409,14 +381,11 @@ function setupSystems(): void {
         }
     }, { phase: 'update' });
 
-    // Food spawning
+    // Food spawning - trust engine's deterministic catch-up
     game.addSystem(() => {
-        // Skip random food spawning during catch-up for non-authority
-        // spawnFood still consumes random values to keep RNG in sync
         const shouldSpawn = Math.random() < FOOD_SPAWN_CHANCE;
         if (game.getEntitiesByType('food').length < MAX_FOOD && shouldSpawn) {
-            const skipSpawn = isInCatchUp && !game.isAuthority();
-            spawnFood(skipSpawn);
+            spawnFood();
         }
     }, { phase: 'update' });
 
@@ -766,51 +735,9 @@ export function initGame(): void {
             killSnake(game.internClientId(clientId));
         },
         onSnapshot(entities: Entity[]) {
-            // Mark that we're in catch-up mode
-            // The catch-up simulation runs synchronously after onSnapshot,
-            // so isInCatchUp will be true during all catch-up ticks.
-            isInCatchUp = true;
-            const snapshotFrame = game.frame;
-            console.log(`[onSnapshot] Entering catch-up mode at frame ${snapshotFrame}, ${entities.length} entities`);
-
-            // Find the maximum spawnFrame for each snake owner from existing segments
-            // This tells us the actual latest segment that exists in the snapshot
-            const maxSpawnFrameByOwner = new Map<number, number>();
-            for (const entity of entities) {
-                if (entity.type === 'snake-segment' && !entity.destroyed) {
-                    const seg = entity.get(SnakeSegment);
-                    const current = maxSpawnFrameByOwner.get(seg.ownerId) ?? 0;
-                    if (seg.spawnFrame > current) {
-                        maxSpawnFrameByOwner.set(seg.ownerId, seg.spawnFrame);
-                    }
-                }
-            }
-
-            // Update each snake head's lastSpawnFrame based on actual segments
-            // This prevents duplicate spawning during catch-up by ensuring we
-            // only spawn segments that don't already exist.
-            for (const entity of entities) {
-                if (entity.type === 'snake-head' && !entity.destroyed) {
-                    const clientId = entity.get(Player).clientId;
-                    const sh = entity.get(SnakeHead);
-                    const maxSegFrame = maxSpawnFrameByOwner.get(clientId);
-
-                    // If we have segments, set lastSpawnFrame to the latest one
-                    // This ensures we don't re-spawn segments during catch-up
-                    if (maxSegFrame !== undefined && maxSegFrame > sh.lastSpawnFrame) {
-                        console.log(`[onSnapshot] Snake ${clientId}: syncing lastSpawnFrame ${sh.lastSpawnFrame} -> ${maxSegFrame}`);
-                        sh.lastSpawnFrame = maxSegFrame;
-                    }
-                }
-            }
-
-            // Schedule clearing the catch-up flag after current call stack completes.
-            // This works because catch-up runs synchronously, and setTimeout
-            // will execute after all synchronous code (including catch-up) finishes.
-            setTimeout(() => {
-                console.log(`[onSnapshot] Exiting catch-up mode at frame ${game.frame}`);
-                isInCatchUp = false;
-            }, 0);
+            // Log snapshot receipt for debugging
+            console.log(`[onSnapshot] Received snapshot at frame ${game.frame}, ${entities.length} entities`);
+            // Engine handles catch-up deterministically - no special game-side handling needed
         }
     });
 
